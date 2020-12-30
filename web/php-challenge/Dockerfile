@@ -1,4 +1,7 @@
 FROM php:fpm-alpine
+RUN apk add --no-cache tzdata
+ENV TZ Asia/Ho_Chi_Minh
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
 # Add php extensions
 RUN apk add autoconf gcc make automake g++ make libffi-dev openssl-dev
@@ -25,10 +28,6 @@ RUN rm -f /usr/local/etc/php-fpm.d/zz-docker.conf /usr/local/etc/php-fpm.d/www.c
 RUN mv /usr/local/etc/php/php.ini-production /usr/local/etc/php/php.ini
 
 RUN sed -i 's/;cgi.fix_pathinfo=1/cgi.fix_pathinfo=0/g' /usr/local/etc/php/php.ini /usr/local/etc/php/conf.d/*
-
-RUN apk add --no-cache tzdata
-ENV TZ Asia/Ho_Chi_Minh
-RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
 ENV MEMCACHED_DEPS zlib-dev libmemcached-dev cyrus-sasl-dev
 RUN apk add --no-cache --update libmemcached-libs zlib
