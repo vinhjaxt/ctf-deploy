@@ -12,7 +12,7 @@ Làm thế nào để triển khai các challenges crypto cho một giải CTF?
 - Vậy thôi, rất đơn giản
 
 # Chạy
-Đây là 3 bài crypto của tác giả (NDH)[https://github.com/nguyenduyhieukma] được dùng trong KMACTF-2020
+Đây là 3 bài crypto của tác giả [NDH](https://github.com/nguyenduyhieukma) được dùng trong KMACTF-2020
 - `./affine/run.sh`
 - `./nonsense/run.sh`
 
