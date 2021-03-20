@@ -17,7 +17,8 @@ const cmd = "stdbuf"
 
 var addr string
 var cmdArgs = []string{"-i0", "-o0", "-e0"}
-var stdinAsArg1 = 0 != len(os.Getenv("PROXY_CMD_STDIN_AS_ARG1"))
+var isStdinAsArg1 = 0 != len(os.Getenv("PROXY_CMD_STDIN_AS_ARG1"))
+var isOutStderr = 0 != len(os.Getenv("PROXY_CMD_OUT_STDERR"))
 
 const maxSTDINSize = 50 * 1024 // 50 KB
 const stdinTimeout = 5 * time.Second
@@ -25,7 +26,7 @@ const stdinTimeout = 5 * time.Second
 func main() {
 	// setrLimit()
 	if len(os.Args) < 4 {
-		log.Println(`Usage:`, os.Args[0], " working_dir listen_address command args...\r\n\tEg:", os.Args[0], "/opt :9999 pwd\r\n\r\nSet non-empty environ variable PROXY_CMD_STDIN_AS_ARG1 to pass stdin as first arg to prog.")
+		log.Println(`Usage:`, os.Args[0], " working_dir listen_address command args...\r\n\tEg:", os.Args[0], "/opt :9999 pwd\r\n\r\nSet non-empty environ variable PROXY_CMD_STDIN_AS_ARG1 to pass stdin as first arg to prog. PROXY_CMD_OUT_STDERR to redirect STDERR to connection")
 		os.Exit(1)
 	}
 
@@ -54,7 +55,7 @@ func main() {
 			log.Println("Accept err:", e)
 			return
 		}
-		if stdinAsArg1 {
+		if isStdinAsArg1 {
 			go handleConn1(conn)
 		} else {
 			go handleConn(conn)
@@ -93,7 +94,11 @@ func handleConn1(conn net.Conn) {
 	newArgs := append(cmdArgs, arg1)
 	cmd := exec.Command(cmd, newArgs...)
 	cmd.Stdout = conn
-	cmd.Stderr = os.Stderr
+	if isOutStderr {
+		cmd.Stderr = conn
+	} else {
+		cmd.Stderr = os.Stderr
+	}
 	err := cmd.Run()
 	if err != nil {
 		log.Println("Run cmd:", err)
@@ -120,7 +125,11 @@ func handleConn(conn net.Conn) {
 		log.Println("Stdin:", err)
 		return
 	}
-	cmd.Stderr = os.Stderr
+	if isOutStderr {
+		cmd.Stderr = conn
+	} else {
+		cmd.Stderr = os.Stderr
+	}
 
 	go func() {
 		_, err := io.Copy(conn, stdout)
