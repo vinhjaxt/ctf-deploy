@@ -25,6 +25,8 @@ Example: ./proxy-cmd -w /opt -b :9999 -- cat /etc/passwd
 # Example
 ```
 ./proxy-cmd -w /opt -b :9999 -- cat /etc/passwd
+./proxy-cmd -w /opt -b :9999 -stdin-as-argument -- cat
 ./proxy-cmd -w /opt -b :9999 -- cat
 ./proxy-cmd -w /opt -b :9999 -- pwd
+
 ```
