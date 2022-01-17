@@ -3,47 +3,51 @@ package main
 // cc: https://github.com/smallnest/1m-go-tcp-server/blob/master/1_simple_tcp_server/server.go
 
 import (
-	"io"
+	"flag"
 	"log"
 	"net"
 	"os"
 	"os/exec"
-	"sync"
-	"syscall"
+	"sync/atomic"
 	"time"
 )
 
 const cmd = "stdbuf"
 
-var addr string
 var cmdArgs = []string{"-i0", "-o0", "-e0"}
-var isStdinAsArg1 = 0 != len(os.Getenv("PROXY_CMD_STDIN_AS_ARG1"))
-var isOutStderr = 0 != len(os.Getenv("PROXY_CMD_OUT_STDERR"))
-
-const maxSTDINSize = 50 * 1024 // 50 KB
-const stdinTimeout = 5 * time.Second
+var flagset = flag.NewFlagSet("OPTIONS", flag.ExitOnError)
+var isStdinAsArg = flagset.Bool("stdin-as-argument", false, "Use stdin as an argument pass to the CMD")
+var maxArgSize = flagset.Int("stdin-maxsize", 50*1024, "Maximum number of bytes stdin as argument")
+var isPrintStderr = flagset.Bool("stderr-print", false, "Print stderr to connection")
+var readTimeout = flagset.Duration("read-timeout", 5*time.Second, "Connection read timeout")
+var runTimeout = flagset.Duration("run-timeout", 2*time.Minute, "Run timeout")
+var workingDir = flagset.String("w", "/opt", "Working directory")
+var bindAddr = flagset.String("b", ":9999", "Bind address")
 
 func main() {
-	// setrLimit()
-	if len(os.Args) < 4 {
-		log.Println(`Usage:`, os.Args[0], " working_dir listen_address command args...\r\n\tEg:", os.Args[0], "/opt :9999 pwd\r\n\r\nSet non-empty environ variable PROXY_CMD_STDIN_AS_ARG1 to pass stdin as first arg to prog. PROXY_CMD_OUT_STDERR to redirect STDERR to connection")
+	for i, arg := range os.Args[1:] {
+		if arg == "--" {
+			flagset.Parse(os.Args[1 : i+1])
+			cmdArgs = append(cmdArgs, os.Args[i+2:]...)
+		}
+	}
+	if !flagset.Parsed() || len(cmdArgs) == 3 {
+		os.Stderr.Write([]byte(`Usage: ` + os.Args[0] + " [OPTIONS] -- CMD [ARGUMENTS...]\n"))
+		flagset.PrintDefaults()
+		os.Stderr.Write([]byte(`Example: ` + os.Args[0] + " -w /opt -b :9999 -- cat /etc/passwd\n"))
 		os.Exit(1)
 	}
 
-	err := os.Chdir(os.Args[1])
+	err := os.Chdir(*workingDir)
 	if err != nil {
 		log.Panicln(err)
 	}
 
-	addr = os.Args[2]
-
-	ln, err := net.Listen("tcp", addr)
+	ln, err := net.Listen("tcp", *bindAddr)
 	if err != nil {
 		log.Panicln(err)
 	}
-	log.Println("Listening", addr)
-
-	cmdArgs = append(cmdArgs, os.Args[3:]...)
+	log.Println("Listening", *bindAddr)
 
 	for {
 		conn, e := ln.Accept()
@@ -55,29 +59,29 @@ func main() {
 			log.Println("Accept err:", e)
 			return
 		}
-		if isStdinAsArg1 {
-			go handleConn1(conn)
+		if *isStdinAsArg {
+			go proxyStdinArg(conn)
 		} else {
-			go handleConn(conn)
+			go proxyStdin(conn)
 		}
 	}
 }
 
-func handleConn1(conn net.Conn) {
+func proxyStdinArg(conn net.Conn) {
 	defer func() {
 		time.Sleep(time.Second)
 		conn.Close()
 	}()
-	conn.Write([]byte("We take your input to pass to the program as an argument. We accept binary formats like \xff, except null-character (\\x00). We will wait 5 seconds for you to finish typing.\r\n"))
+	conn.Write([]byte("We take your input to pass to CMD as an argument. We accept binary formats like \xff, except null-character (\\x00). We will wait 5 seconds for you to finish typing.\r\n"))
 	var data []byte
 	lenData := 0
 	buf := make([]byte, 1024)
 	for {
-		conn.SetReadDeadline(time.Now().Add(stdinTimeout))
+		conn.SetReadDeadline(time.Now().Add(*readTimeout))
 		n, err := conn.Read(buf)
 		if n != 0 {
-			if n >= maxSTDINSize-lenData {
-				buf = buf[:maxSTDINSize-lenData]
+			if n >= *maxArgSize-lenData {
+				buf = buf[:*maxArgSize-lenData]
 				data = append(data, buf...)
 				break
 			}
@@ -90,29 +94,41 @@ func handleConn1(conn net.Conn) {
 			break
 		}
 	}
-	arg1 := string(data)
-	newArgs := append(cmdArgs, arg1)
+	newArgs := append(cmdArgs, string(data))
 	cmd := exec.Command(cmd, newArgs...)
 	cmd.Stdout = conn
-	if isOutStderr {
+	if *isPrintStderr {
 		cmd.Stderr = conn
 	} else {
 		cmd.Stderr = os.Stderr
 	}
-	err := cmd.Run()
+	err := cmd.Start()
 	if err != nil {
 		log.Println("Run cmd:", err)
 	}
+	defer cmd.Process.Kill()
+	doneChan := make(chan struct{})
+	go func() {
+		cmd.Wait()
+		close(doneChan)
+	}()
+	select {
+	case <-time.After(*runTimeout):
+		cmd.Process.Kill()
+		conn.SetWriteDeadline(time.Now().Add(*readTimeout))
+		conn.Write([]byte("Timeout\n"))
+	case <-doneChan:
+	}
 }
 
-func handleConn(conn net.Conn) {
+func proxyStdin(conn net.Conn) {
 	defer func() {
 		time.Sleep(time.Second)
 		conn.Close()
 	}()
 
-	var setDone sync.Once
-	done := make(chan struct{})
+	var doneFlag int32 = 1
+	doneChan := make(chan struct{})
 
 	cmd := exec.Command(cmd, cmdArgs...)
 	stdout, err := cmd.StdoutPipe()
@@ -125,29 +141,54 @@ func handleConn(conn net.Conn) {
 		log.Println("Stdin:", err)
 		return
 	}
-	if isOutStderr {
+	if *isPrintStderr {
 		cmd.Stderr = conn
 	} else {
 		cmd.Stderr = os.Stderr
 	}
 
 	go func() {
-		_, err := io.Copy(conn, stdout)
-		if err != nil {
-			// log.Println("Write remote:", err)
+		defer func() {
+			if atomic.CompareAndSwapInt32(&doneFlag, 1, 0) {
+				close(doneChan)
+			}
+		}()
+		buf := make([]byte, 1024)
+		for {
+			n1, err := stdout.Read(buf)
+			if n1 > 0 {
+				conn.SetWriteDeadline(time.Now().Add(*readTimeout))
+				n2, err := conn.Write(buf[:n1])
+				if n2 != n1 || err != nil {
+					return
+				}
+			}
+			if err != nil {
+				return
+			}
 		}
-		setDone.Do(func() {
-			close(done)
-		})
 	}()
+
 	go func() {
-		_, err := io.Copy(stdin, conn)
-		if err != nil {
-			// log.Println("Read remote:", err)
+		defer func() {
+			if atomic.CompareAndSwapInt32(&doneFlag, 1, 0) {
+				close(doneChan)
+			}
+		}()
+		buf := make([]byte, 1024)
+		for {
+			conn.SetReadDeadline(time.Now().Add(*readTimeout))
+			n1, err := conn.Read(buf)
+			if n1 > 0 {
+				_, err := stdin.Write(buf[:n1])
+				if err != nil {
+					return
+				}
+			}
+			if err != nil {
+				return
+			}
 		}
-		setDone.Do(func() {
-			close(done)
-		})
 	}()
 
 	err = cmd.Start()
@@ -157,18 +198,10 @@ func handleConn(conn net.Conn) {
 	}
 	defer cmd.Process.Kill()
 
-	<-done
-}
-
-func setrLimit() {
-	var rLimit syscall.Rlimit
-	err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &rLimit)
-	if err != nil {
-		log.Panicln(err)
-	}
-	rLimit.Cur = rLimit.Max
-	err = syscall.Setrlimit(syscall.RLIMIT_NOFILE, &rLimit)
-	if err != nil {
-		log.Panicln(err)
+	select {
+	case <-time.After(*runTimeout):
+		conn.SetWriteDeadline(time.Now().Add(*readTimeout))
+		conn.Write([]byte("Timeout\n"))
+	case <-doneChan:
 	}
 }
