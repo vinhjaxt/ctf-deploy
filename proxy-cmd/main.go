@@ -72,12 +72,13 @@ func proxyStdinArg(conn net.Conn) {
 		time.Sleep(time.Second)
 		conn.Close()
 	}()
-	conn.Write([]byte("We take your input to pass to CMD as an argument. We accept binary formats like \xff, except null-character (\\x00). We will wait 5 seconds for you to finish typing.\r\n"))
-	var data []byte
+	conn.Write([]byte("We take your input to pass to CMD as an argument. We accept binary formats like \xff, except null-character (\\x00). We will wait " + readTimeout.String() + " for you to finish typing.\r\n"))
 	lenData := 0
+	data := make([]byte, *maxArgSize)
+	data = data[:0]
 	buf := make([]byte, 1024)
+	conn.SetReadDeadline(time.Now().Add(*readTimeout + time.Second))
 	for {
-		conn.SetReadDeadline(time.Now().Add(*readTimeout))
 		n, err := conn.Read(buf)
 		if n != 0 {
 			if n >= *maxArgSize-lenData {
